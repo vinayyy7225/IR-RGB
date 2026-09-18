@@ -23,7 +23,7 @@ training:
   beta1: 0.5
   beta2: 0.999
   epochs_sr: 10
-  epochs_pix2pix: 30
+  epochs_pix2pix: 45
   save_epoch_freq: 2
   checkpoints_dir: "checkpoints"
   outputs_dir: "outputs"
