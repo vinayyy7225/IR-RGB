@@ -2,13 +2,15 @@ import os
 import sys
 import yaml
 import glob
+import base64
+import io
 from pathlib import Path
 import torch
 import numpy as np
 import rasterio
 import streamlit as st
+import streamlit.components.v1 as components
 from PIL import Image
-from evaluation.metrics import calculate_psnr, calculate_ssim
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -16,15 +18,15 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from models.realesrgan.model import RRDBNet
 from models.pix2pix.model import UNetGenerator
+from evaluation.metrics import calculate_psnr, calculate_ssim
 
-# Page Configuration for Premium Look
 st.set_page_config(
-    page_title="ISRO Satellite IR Colorization & Enhancement",
+    page_title="ISRO Satellite IR Colorization & Ultra HD Enhancement",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for rich aesthetics (dark mode styling, cards, smooth transitions, custom fonts)
+# Custom CSS for rich aesthetics
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&display=swap');
@@ -34,86 +36,85 @@ st.markdown("""
     }
     
     .main {
-        background-color: #0f111a;
+        background-color: #0b0d14;
         color: #ffffff;
     }
     
-    /* Title and Header styling */
     .title-gradient {
         background: linear-gradient(135deg, #00f2fe 0%, #4facfe 100%);
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
-        font-size: 2.8rem;
+        font-size: 2.5rem;
         font-weight: 800;
         margin-bottom: 0.2rem;
     }
     
     .subtitle {
-        color: #8f9cae;
-        font-size: 1.1rem;
+        color: #94a3b8;
+        font-size: 1.05rem;
         font-weight: 300;
-        margin-bottom: 2rem;
+        margin-bottom: 1.8rem;
     }
     
-    /* Card design */
     .metric-card {
         background: rgba(255, 255, 255, 0.03);
-        border: 1px solid rgba(255, 255, 255, 0.05);
-        border-radius: 12px;
-        padding: 1.5rem;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 14px;
+        padding: 1.2rem;
         text-align: center;
-        box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);
-        backdrop-filter: blur(4px);
+        box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+        backdrop-filter: blur(8px);
         transition: transform 0.3s ease;
     }
     
     .metric-card:hover {
-        transform: translateY(-5px);
-        border-color: rgba(0, 242, 254, 0.3);
+        transform: translateY(-3px);
+        border-color: rgba(0, 242, 254, 0.4);
     }
     
     .metric-value {
-        font-size: 2.2rem;
+        font-size: 2.1rem;
         font-weight: 700;
         color: #00f2fe;
-        margin-top: 0.5rem;
+        margin-top: 0.3rem;
     }
     
     .metric-label {
-        font-size: 0.9rem;
-        color: #8f9cae;
+        font-size: 0.85rem;
+        color: #94a3b8;
         text-transform: uppercase;
         letter-spacing: 1px;
     }
     
-    /* Button custom style */
     .stButton>button {
         background: linear-gradient(135deg, #00f2fe 0%, #4facfe 100%);
-        color: white;
+        color: #0b0d14;
         border: none;
         border-radius: 8px;
-        padding: 0.6rem 1.8rem;
-        font-weight: 600;
+        padding: 0.6rem 2rem;
+        font-weight: 700;
         transition: all 0.3s ease;
-        box-shadow: 0 4px 15px rgba(0, 242, 254, 0.2);
+        box-shadow: 0 4px 15px rgba(0, 242, 254, 0.3);
     }
     
     .stButton>button:hover {
         background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
-        box-shadow: 0 6px 20px rgba(0, 242, 254, 0.4);
+        box-shadow: 0 6px 25px rgba(0, 242, 254, 0.6);
         transform: scale(1.02);
     }
     
-    /* Sidebar styling */
     section[data-testid="stSidebar"] {
-        background-color: #08090f;
-        border-right: 1px solid rgba(255, 255, 255, 0.05);
+        background-color: #080a10;
+        border-right: 1px solid rgba(255, 255, 255, 0.06);
     }
 </style>
 """, unsafe_allow_html=True)
 
 def load_config(config_path="configs/config.yaml"):
-    with open(config_path, "r") as f:
+    config_file = PROJECT_ROOT / config_path
+    if not config_file.exists():
+        config_file = Path(config_path)
+    with open(config_file, "r") as f:
         return yaml.safe_load(f)
 
 def get_percentile_min_max(band_arr, p_min=2, p_max=98):
@@ -128,7 +129,82 @@ def normalize_band(band_arr, b_min, b_max):
     normalized = (band_arr.astype(np.float32) - b_min) / (b_max - b_min)
     return np.clip(normalized, 0.0, 1.0)
 
-def load_scene_data(scene_dir):
+def render_zoomable_viewer(img_array, height=520):
+    """
+    Renders an interactive Ultra-HD Pan & Zoom viewer component in Streamlit.
+    """
+    pil_img = Image.fromarray(img_array)
+    buffered = io.BytesIO()
+    pil_img.save(buffered, format="PNG")
+    img_b64 = base64.b64encode(buffered.getvalue()).decode()
+    
+    viewer_code = f"""
+    <div style="position: relative; width: 100%; height: {height}px; background: #05070d; border-radius: 12px; overflow: hidden; border: 1px solid rgba(255,255,255,0.1); cursor: grab;" id="panContainer">
+        <div style="position: absolute; top: 12px; left: 15px; z-index: 10; background: rgba(15,23,42,0.85); backdrop-filter: blur(8px); padding: 6px 14px; border-radius: 20px; font-family: sans-serif; font-size: 12px; color: #38bdf8; border: 1px solid rgba(255,255,255,0.1);">
+            🔍 Scroll to Zoom • Drag to Pan (<span id="zoomDisplay">100%</span>)
+        </div>
+        <div style="position: absolute; bottom: 12px; right: 15px; z-index: 10; display: flex; gap: 8px;">
+            <button id="btnZoomIn" style="background: rgba(15,23,42,0.85); color: #fff; border: 1px solid rgba(255,255,255,0.2); width: 32px; height: 32px; border-radius: 50%; font-size: 16px; cursor: pointer;">+</button>
+            <button id="btnZoomOut" style="background: rgba(15,23,42,0.85); color: #fff; border: 1px solid rgba(255,255,255,0.2); width: 32px; height: 32px; border-radius: 50%; font-size: 16px; cursor: pointer;">−</button>
+            <button id="btnReset" style="background: rgba(15,23,42,0.85); color: #fff; border: 1px solid rgba(255,255,255,0.2); padding: 0 12px; border-radius: 16px; font-size: 12px; cursor: pointer;">Reset</button>
+        </div>
+        <div id="wrapper" style="width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;">
+            <img id="zoomImg" src="data:image/png;base64,{img_b64}" style="max-width: 95%; max-height: 95%; object-fit: contain; transform-origin: center center; user-select: none; -webkit-user-drag: none;" />
+        </div>
+    </div>
+    <script>
+        const container = document.getElementById('panContainer');
+        const img = document.getElementById('zoomImg');
+        const zoomDisplay = document.getElementById('zoomDisplay');
+        let scale = 1;
+        let panning = false;
+        let pointX = 0, pointY = 0, startX = 0, startY = 0;
+
+        function update() {{
+            img.style.transform = `translate(${{pointX}}px, ${{pointY}}px) scale(${{scale}})`;
+            zoomDisplay.textContent = `${{Math.round(scale * 100)}}%`;
+        }}
+
+        container.onmousedown = (e) => {{
+            e.preventDefault();
+            startX = e.clientX - pointX;
+            startY = e.clientY - pointY;
+            panning = true;
+            container.style.cursor = 'grabbing';
+        }};
+
+        window.onmouseup = () => {{
+            panning = false;
+            container.style.cursor = 'grab';
+        }};
+
+        window.onmousemove = (e) => {{
+            if (!panning) return;
+            pointX = e.clientX - startX;
+            pointY = e.clientY - startY;
+            update();
+        }};
+
+        container.onwheel = (e) => {{
+            e.preventDefault();
+            const xs = (e.clientX - pointX) / scale;
+            const ys = (e.clientY - pointY) / scale;
+            const delta = -e.deltaY;
+            scale = delta > 0 ? scale * 1.15 : scale / 1.15;
+            scale = Math.min(Math.max(0.2, scale), 25.0);
+            pointX = e.clientX - xs * scale;
+            pointY = e.clientY - ys * scale;
+            update();
+        }};
+
+        document.getElementById('btnZoomIn').onclick = () => {{ scale = Math.min(scale * 1.3, 25.0); update(); }};
+        document.getElementById('btnZoomOut').onclick = () => {{ scale = Math.max(scale / 1.3, 0.2); update(); }};
+        document.getElementById('btnReset').onclick = () => {{ scale = 1; pointX = 0; pointY = 0; update(); }};
+    </script>
+    """
+    components.html(viewer_code, height=height + 10)
+
+def load_scene_crop(scene_dir, crop_size=1024):
     b2_files = glob.glob(os.path.join(scene_dir, "*_B2.TIF"))
     if not b2_files:
         return None
@@ -148,13 +224,9 @@ def load_scene_data(scene_dir):
         if not os.path.exists(p):
             return None
         with rasterio.open(p) as src:
-            # Subsample image for faster local demo loading (e.g. step by 4)
-            # Full 9000x9000 is too large to process in real-time in a streamlit UI!
-            # Reading a 1024x1024 crop from the center is perfect for demonstration.
             h, w = src.shape
             cy, cx = h // 2, w // 2
-            crop_size = 1024
-            window = rasterio.windows.Window(cx - crop_size//2, cy - crop_size//2, crop_size, crop_size)
+            window = rasterio.windows.Window(max(0, cx - crop_size//2), max(0, cy - crop_size//2), crop_size, crop_size)
             bands_data[b] = src.read(1, window=window)
             
     return bands_data
@@ -162,65 +234,57 @@ def load_scene_data(scene_dir):
 def main():
     config = load_config()
     raw_dir = config["data"]["raw_dir"]
+    if not os.path.isabs(raw_dir):
+        raw_dir = str(PROJECT_ROOT / raw_dir)
+        
     checkpoints_dir = config["training"]["checkpoints_dir"]
+    if not os.path.isabs(checkpoints_dir):
+        checkpoints_dir = str(PROJECT_ROOT / checkpoints_dir)
+        
+    st.markdown('<div class="title-gradient">ISRO Bharatiya Antariksh Hackathon</div>', unsafe_allow_html=True)
+    st.markdown('<div class="subtitle">Thermal Infrared (TIRS) to Ultra-HD True-Color RGB Synthesis Pipeline</div>', unsafe_allow_html=True)
     
-    # Header
-    st.markdown('<div class="title-gradient">Bharatiya Antariksh Hackathon 2026</div>', unsafe_allow_html=True)
-    st.markdown('<div class="subtitle">Infrared Image Colorization and Enhancement for Satellite Imagery</div>', unsafe_allow_html=True)
+    scene_folders = sorted([d for d in os.listdir(raw_dir) if os.path.isdir(os.path.join(raw_dir, d)) and d != "processed"]) if os.path.exists(raw_dir) else []
     
-    # Find scene folders
-    scene_folders = sorted([d for d in os.listdir(raw_dir) if os.path.isdir(os.path.join(raw_dir, d)) and d != "processed"])
-    
-    # Sidebar config
-    st.sidebar.markdown("### 🛰️ Dataset & Scene selection")
+    st.sidebar.markdown("### 🛰️ Landsat Scene Selection")
     if not scene_folders:
-        st.sidebar.error("No Landsat scenes found in FILES directory.")
+        st.sidebar.error("No scene directories found in FILES folder.")
         return
         
-    selected_scene_name = st.sidebar.selectbox("Select Landsat Scene", scene_folders)
-    selected_scene_dir = os.path.join(raw_dir, selected_scene_name)
+    selected_scene = st.sidebar.selectbox("Select Target Scene", scene_folders)
+    selected_scene_dir = os.path.join(raw_dir, selected_scene)
     
     st.sidebar.markdown("---")
-    st.sidebar.markdown("### 🎛️ Model Configuration")
+    st.sidebar.markdown("### 🎛️ Checkpoint Models")
     
-    # Get available checkpoints
     all_chks = os.listdir(checkpoints_dir) if os.path.exists(checkpoints_dir) else []
-    sr_chks = sorted([f for f in all_chks if f.startswith("realesrgan_") and f.endswith(".pth")])
-    pix_chks = sorted([f for f in all_chks if f.startswith("pix2pix_gen_") and f.endswith(".pth")])
+    sr_chks = sorted([f for f in all_chks if f.startswith("realesrgan") and f.endswith(".pth")])
+    pix_chks = sorted([f for f in all_chks if (f.startswith("pix2pix") or f.startswith("pix2pix_gen")) and f.endswith(".pth")])
     
-    if not sr_chks:
-        st.sidebar.warning("⚠️ No Real-ESRGAN checkpoints found.")
-        sr_chk = None
-        sr_found = False
+    sr_chk = os.path.join(checkpoints_dir, sr_chks[0]) if sr_chks else None
+    pix_chk = os.path.join(checkpoints_dir, pix_chks[0]) if pix_chks else None
+    
+    if sr_chks:
+        st.sidebar.success(f"✔️ Real-ESRGAN: {sr_chks[0]}")
     else:
-        def_sr_idx = sr_chks.index("realesrgan_best.pth") if "realesrgan_best.pth" in sr_chks else len(sr_chks)-1
-        sel_sr = st.sidebar.selectbox("Real-ESRGAN Checkpoint", sr_chks, index=def_sr_idx)
-        sr_chk = os.path.join(checkpoints_dir, sel_sr)
-        sr_found = True
+        st.sidebar.warning("⚠️ No Real-ESRGAN checkpoint found.")
         
-    if not pix_chks:
-        st.sidebar.warning("⚠️ No Pix2Pix checkpoints found.")
-        pix_chk = None
-        pix_found = False
+    if pix_chks:
+        st.sidebar.success(f"✔️ Pix2Pix: {pix_chks[0]}")
     else:
-        def_pix_idx = pix_chks.index("pix2pix_gen_best.pth") if "pix2pix_gen_best.pth" in pix_chks else len(pix_chks)-1
-        sel_pix = st.sidebar.selectbox("Pix2Pix Checkpoint", pix_chks, index=def_pix_idx)
-        pix_chk = os.path.join(checkpoints_dir, sel_pix)
-        pix_found = True
+        st.sidebar.warning("⚠️ No Pix2Pix checkpoint found.")
         
-    if sr_found and pix_found:
-        st.sidebar.success("✔️ Trained model checkpoints selected.")
-        
-    # Load scene data
-    with st.spinner("Loading satellite bands..."):
-        data = load_scene_data(selected_scene_dir)
+    # Crop size selector
+    crop_size = st.sidebar.select_slider("Inference Viewport Resolution", options=[512, 1024, 1536, 2048], value=1024)
+    
+    with st.spinner("Loading high-resolution satellite bands..."):
+        data = load_scene_crop(selected_scene_dir, crop_size=crop_size)
         
     if data is None:
-        st.error("Failed to load bands. Please ensure B2, B3, B4, B5, B10, and B11 TIFF files exist.")
+        st.error("Could not load scene bands. Ensure B2, B3, B4, B5, B10, and B11 TIFF files exist.")
         return
         
-    # Preprocess crop
-    # Normalize inputs
+    # Prepare normalized data
     rgb_min_max = {b: get_percentile_min_max(data[b]) for b in ["B4", "B3", "B2"]}
     gt_rgb = np.stack([
         normalize_band(data["B4"], *rgb_min_max["B4"]),
@@ -234,146 +298,125 @@ def main():
     norm_t11 = normalize_band(data["B11"], t11_min, t11_max)
     ir_input = np.stack([norm_t10, norm_t11], axis=-1)
     
-    # Display raw details in tabs
-    tab_inspect, tab_enhance = st.tabs(["🔍 Inspect Bands", "🚀 Enhancement & Colorization"])
+    tab_enhance, tab_bands, tab_ndvi = st.tabs(["🚀 Ultra HD Colorization", "🔍 Spectral Bands", "🌱 Physical NDVI Consistency"])
     
-    with tab_inspect:
-        st.markdown("### Raw Satellite Spectral Bands (1024x1024 Center Crop)")
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.image(norm_t10, caption="Band 10: Thermal Infrared (TIRS) 1", use_container_width=True, clamp=True)
-        with col2:
-            st.image(norm_t11, caption="Band 11: Thermal Infrared (TIRS) 2", use_container_width=True, clamp=True)
-        with col3:
-            # NIR band
-            nir_min, nir_max = get_percentile_min_max(data["B5"])
-            norm_nir = normalize_band(data["B5"], nir_min, nir_max)
-            st.image(norm_nir, caption="Band 5: Near Infrared (NIR)", use_container_width=True, clamp=True)
-            
-        st.markdown("---")
-        st.markdown("### Ground Truth RGB Composition")
-        st.image(gt_rgb, caption="True Color RGB Composite (Bands 4, 3, 2)", use_container_width=True)
-
     with tab_enhance:
-        st.markdown("### Run Inference Pipeline")
-        st.write("Apply Real-ESRGAN super-resolution to TIRS bands, then convert to colorized RGB using Pix2Pix.")
+        st.markdown("### Interactive Ultra-HD Colorization & Deep Zoom")
+        st.write("Generate high-fidelity true color from thermal bands and zoom in smoothly without quality loss.")
         
-        if st.button("🚀 Process Image"):
-            # Load PyTorch models
+        if st.button("✨ Run Ultra HD Synthesis"):
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             scale = config["models"]["realesrgan"]["scale"]
+            patch_size = config["data"]["patch_size"]
             
-            # Instantiating Real-ESRGAN
-            nf_sr = config["models"]["realesrgan"]["num_filters"]
-            nb_sr = config["models"]["realesrgan"]["num_blocks"]
-            net_sr = RRDBNet(in_nc=2, out_nc=2, nf=nf_sr, nb=nb_sr, gc=32, upscale=scale).to(device)
-            if sr_found:
-                net_sr.load_state_dict(torch.load(sr_chk, map_location=device))
+            # Load models
+            net_sr = RRDBNet(in_nc=2, out_nc=2, nf=config["models"]["realesrgan"]["num_filters"], nb=config["models"]["realesrgan"]["num_blocks"], gc=32, upscale=scale).to(device)
+            if sr_chk and os.path.exists(sr_chk):
+                weights_sr = torch.load(sr_chk, map_location=device)
+                if "model" in weights_sr: weights_sr = weights_sr["model"]
+                net_sr.load_state_dict(weights_sr)
             net_sr.eval()
             
-            # Instantiating Pix2Pix
             net_g = UNetGenerator(input_nc=2, output_nc=3, num_downs=8, ngf=64).to(device)
-            if pix_found:
-                net_g.load_state_dict(torch.load(pix_chk, map_location=device))
+            if pix_chk and os.path.exists(pix_chk):
+                weights_g = torch.load(pix_chk, map_location=device)
+                if "generator" in weights_g: weights_g = weights_g["generator"]
+                net_g.load_state_dict(weights_g)
             net_g.eval()
             
-            # Perform inference on crops
-            # To handle 1024x1024, we slice it into 4x4 non-overlapping patches of 256x256
-            patch_size = config["data"]["patch_size"]
+            # Stitching with 50% overlap and Hann window
+            stride = patch_size // 2
             h_crop, w_crop, _ = ir_input.shape
             
-            stitched_rgb = np.zeros((h_crop, w_crop, 3), dtype=np.float32)
-            stitched_sr_ir = np.zeros((h_crop, w_crop, 2), dtype=np.float32)
+            # Pad
+            pad_h = (patch_size - h_crop % patch_size) % patch_size
+            pad_w = (patch_size - w_crop % patch_size) % patch_size
+            padded_ir = np.pad(ir_input, ((0, pad_h), (0, pad_w), (0, 0)), mode='edge')
+            h_p, w_p, _ = padded_ir.shape
+            
+            stitched_rgb = np.zeros((h_p, w_p, 3), dtype=np.float32)
+            weight_sum = np.zeros((h_p, w_p, 1), dtype=np.float32)
+            
+            w_1d = np.hanning(patch_size)
+            w_2d = np.outer(w_1d, w_1d)[:, :, None].astype(np.float32)
             
             with torch.no_grad():
-                for y in range(0, h_crop, patch_size):
-                    for x in range(0, w_crop, patch_size):
-                        # Extract patch
-                        patch_ir = ir_input[y : y + patch_size, x : x + patch_size]
-                        patch_ir_tensor = torch.from_numpy(patch_ir).permute(2, 0, 1).unsqueeze(0).float().to(device)
+                for y in range(0, h_p - patch_size + 1, stride):
+                    for x in range(0, w_p - patch_size + 1, stride):
+                        p_ir = padded_ir[y : y + patch_size, x : x + patch_size]
+                        t_ir = torch.from_numpy(p_ir).permute(2, 0, 1).unsqueeze(0).float().to(device)
                         
-                        # Simulate low-res first for the demonstration of super-res enhancement
-                        lr_ir_tensor = torch.nn.functional.interpolate(
-                            patch_ir_tensor, 
-                            size=(patch_size // scale, patch_size // scale), 
-                            mode='bilinear', 
-                            align_corners=False
-                        )
+                        lr_ir = torch.nn.functional.interpolate(t_ir, size=(patch_size // scale, patch_size // scale), mode='bilinear', align_corners=False)
+                        sr_ir = torch.clamp(net_sr(lr_ir), 0.0, 1.0)
                         
-                        # Super resolve
-                        sr_ir_tensor = net_sr(lr_ir_tensor)
-                        sr_ir_tensor = torch.clamp(sr_ir_tensor, 0.0, 1.0)
+                        fake_rgb = net_g(sr_ir)
+                        fake_rgb = torch.clamp((fake_rgb + 1.0) * 0.5, 0.0, 1.0)
                         
-                        # Colorize
-                        fake_rgb_tensor = net_g(sr_ir_tensor)
-                        # Scale back to [0, 1]
-                        fake_rgb_tensor = (fake_rgb_tensor + 1.0) / 2.0
-                        fake_rgb_tensor = torch.clamp(fake_rgb_tensor, 0.0, 1.0)
+                        rgb_out = fake_rgb.squeeze(0).permute(1, 2, 0).cpu().numpy()
+                        stitched_rgb[y : y + patch_size, x : x + patch_size] += rgb_out * w_2d
+                        weight_sum[y : y + patch_size, x : x + patch_size] += w_2d
                         
-                        # Save
-                        stitched_sr_ir[y : y + patch_size, x : x + patch_size] = sr_ir_tensor.squeeze(0).permute(1, 2, 0).cpu().numpy()
-                        stitched_rgb[y : y + patch_size, x : x + patch_size] = fake_rgb_tensor.squeeze(0).permute(1, 2, 0).cpu().numpy()
-                        
-            # Metrics
-            psnr_val = calculate_psnr(stitched_rgb, gt_rgb)
-            ssim_val = calculate_ssim(stitched_rgb, gt_rgb)
+            weight_sum[weight_sum == 0] = 1e-8
+            stitched_rgb /= weight_sum
+            final_gen = np.clip(stitched_rgb[:h_crop, :w_crop], 0.0, 1.0)
             
-            # Display metrics cards
-            st.markdown("### 📊 Quantitative Evaluation")
+            # Metrics
+            psnr_score = calculate_psnr(final_gen, gt_rgb)
+            ssim_score = calculate_ssim(final_gen, gt_rgb)
+            
             col_m1, col_m2 = st.columns(2)
             with col_m1:
                 st.markdown(f"""
                 <div class="metric-card">
                     <div class="metric-label">Peak Signal-to-Noise Ratio (PSNR)</div>
-                    <div class="metric-value">{psnr_val:.2f} dB</div>
+                    <div class="metric-value">{psnr_score:.2f} dB</div>
                 </div>
                 """, unsafe_allow_html=True)
             with col_m2:
                 st.markdown(f"""
                 <div class="metric-card">
                     <div class="metric-label">Structural Similarity Index (SSIM)</div>
-                    <div class="metric-value">{ssim_val:.4f}</div>
+                    <div class="metric-value">{ssim_score:.4f}</div>
                 </div>
                 """, unsafe_allow_html=True)
                 
             st.markdown("---")
-            st.markdown("### 🎨 Comparison Results")
+            st.markdown("#### 🔍 Ultra-HD Deep Zoom Viewer (Generated Output)")
+            st.caption("Interact below: Scroll wheel zooms down to individual pixels. Drag mouse to pan across landscape.")
+            gen_uint8 = (final_gen * 255.0).astype(np.uint8)
+            render_zoomable_viewer(gen_uint8, height=550)
             
-            # Displays
-            col_res1, col_res2 = st.columns(2)
-            with col_res1:
-                st.image(norm_t10, caption="Input Raw Thermal (Band 10)", use_container_width=True)
-                st.image(stitched_rgb, caption="Enhanced & Colorized RGB (Model Output)", use_container_width=True)
-            with col_res2:
-                st.image(stitched_sr_ir[:, :, 0], caption="Super-Resolved Thermal (Real-ESRGAN)", use_container_width=True)
-                st.image(gt_rgb, caption="Ground Truth True Color RGB", use_container_width=True)
-                
             st.markdown("---")
-            st.markdown("### 🌱 Semantic Physical Consistency (NDVI Maps)")
-            st.write("Compare the Normalized Difference Vegetation Index (NDVI) between the Ground Truth RGB and the Model Output to verify physical accuracy.")
-            
-            # Calculate NDVI: using NIR (B5) and Red (B4)
-            # In gt_rgb, Red is index 0. In stitched_rgb, Red is index 0.
-            # B5 is norm_nir
+            st.markdown("#### Side-by-Side Visual Comparison")
+            c1, c2 = st.columns(2)
+            with c1:
+                st.image(norm_t10, caption="Input Thermal Infrared (Band 10)", use_container_width=True)
+            with c2:
+                st.image(gt_rgb, caption="Ground Truth Optical RGB Composite", use_container_width=True)
+                
+    with tab_bands:
+        st.markdown("### Raw Satellite Spectral Bands")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.image(norm_t10, caption="Band 10: Thermal Infrared 1", use_container_width=True)
+        with col2:
+            st.image(norm_t11, caption="Band 11: Thermal Infrared 2", use_container_width=True)
+        with col3:
             nir_min, nir_max = get_percentile_min_max(data["B5"])
             norm_nir = normalize_band(data["B5"], nir_min, nir_max)
+            st.image(norm_nir, caption="Band 5: Near-Infrared (NIR)", use_container_width=True)
             
-            gt_red = gt_rgb[:, :, 0]
-            gen_red = stitched_rgb[:, :, 0]
-            
-            eps = 1e-6
-            gt_ndvi = (norm_nir - gt_red) / (norm_nir + gt_red + eps)
-            gen_ndvi = (norm_nir - gen_red) / (norm_nir + gen_red + eps)
-            
-            # Scale NDVI [-1, 1] to [0, 1] for gray scaling in streamlit
-            gt_ndvi_disp = (gt_ndvi + 1.0) / 2.0
-            gen_ndvi_disp = (gen_ndvi + 1.0) / 2.0
-            
-            col_ndvi1, col_ndvi2 = st.columns(2)
-            with col_ndvi1:
-                st.image(gt_ndvi_disp, caption="Ground Truth NDVI Map", use_container_width=True, clamp=True)
-            with col_ndvi2:
-                st.image(gen_ndvi_disp, caption="Generated NDVI Map", use_container_width=True, clamp=True)
+    with tab_ndvi:
+        st.markdown("### Physical Spectral Consistency (NDVI)")
+        st.write("Verifies that the generated optical vegetation reflectance obeys physical earth observation laws.")
+        nir_min, nir_max = get_percentile_min_max(data["B5"])
+        norm_nir = normalize_band(data["B5"], nir_min, nir_max)
+        gt_red = gt_rgb[:, :, 0]
+        
+        gt_ndvi = (norm_nir - gt_red) / np.clip(norm_nir + gt_red, 1e-3, None)
+        gt_ndvi_disp = np.clip((gt_ndvi + 1.0) * 0.5, 0.0, 1.0)
+        
+        st.image(gt_ndvi_disp, caption="Ground Truth Normalized Difference Vegetation Index", use_container_width=True)
 
 if __name__ == "__main__":
     main()

@@ -61,10 +61,8 @@ class RRDBNet(nn.Module):
         
         # Upsampling layers
         if upscale == 2:
-            self.upconv = nn.Conv2d(nf, nf, 3, 1, 1, bias=True)
+            self.upconv = nn.Conv2d(nf, nf * 4, 3, 1, 1, bias=True)
             self.pixel_shuffle = nn.PixelShuffle(2)
-            # After pixel shuffle, channels are divided by 4, so we adapt:
-            self.up_features = nn.Conv2d(nf // 4, nf, 3, 1, 1, bias=True)
         elif upscale == 4:
             self.upconv1 = nn.Conv2d(nf, nf * 4, 3, 1, 1, bias=True)
             self.pixel_shuffle1 = nn.PixelShuffle(2) # up by 2x
@@ -82,7 +80,6 @@ class RRDBNet(nn.Module):
 
         if self.upscale == 2:
             fea = self.lrelu(self.pixel_shuffle(self.upconv(fea)))
-            fea = self.lrelu(self.up_features(fea))
         elif self.upscale == 4:
             fea = self.lrelu(self.pixel_shuffle1(self.upconv1(fea)))
             fea = self.lrelu(self.pixel_shuffle2(self.upconv2(fea)))

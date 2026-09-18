@@ -2,6 +2,14 @@
 checkpoints/
 outputs/
 
+# Dataset and Processed Patches (Large binary data)
+processed/
+FILES/
+*.npz
+*.zip
+*.TIF
+*.tif
+
 # Python Cache
 __pycache__/
 *.pyc
