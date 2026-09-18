@@ -1,5 +1,6 @@
 import os
 import glob
+import random
 import numpy as np
 import torch
 from torch.utils.data import Dataset
@@ -8,6 +9,7 @@ import torch.nn.functional as F
 class LandsatDataset(Dataset):
     """
     Custom PyTorch Dataset for loading Landsat patches saved in NPZ format.
+    Includes data augmentation (flips and rotations) for satellite scenes during training.
     """
     def __init__(self, data_dir, is_train=True, scale_factor=4):
         """
@@ -35,17 +37,35 @@ class LandsatDataset(Dataset):
             # nir: (256, 256, 1), range [0, 1]
             nir = data["nir"]
             
+        # Data augmentation for training:
+        if self.is_train:
+            # Random horizontal flip
+            if random.random() > 0.5:
+                rgb = np.fliplr(rgb)
+                ir = np.fliplr(ir)
+                nir = np.fliplr(nir)
+            # Random vertical flip
+            if random.random() > 0.5:
+                rgb = np.flipud(rgb)
+                ir = np.flipud(ir)
+                nir = np.flipud(nir)
+            # Random 90, 180, 270 degree rotation
+            k = random.randint(0, 3)
+            if k > 0:
+                rgb = np.rot90(rgb, k)
+                ir = np.rot90(ir, k)
+                nir = np.rot90(nir, k)
+                
         # Convert to torch tensors and transpose to channel-first (C, H, W)
-        rgb_tensor = torch.from_numpy(rgb).permute(2, 0, 1).float()
-        ir_tensor = torch.from_numpy(ir).permute(2, 0, 1).float()
-        nir_tensor = torch.from_numpy(nir).permute(2, 0, 1).float()
+        rgb_tensor = torch.from_numpy(np.ascontiguousarray(rgb)).permute(2, 0, 1).float()
+        ir_tensor = torch.from_numpy(np.ascontiguousarray(ir)).permute(2, 0, 1).float()
+        nir_tensor = torch.from_numpy(np.ascontiguousarray(nir)).permute(2, 0, 1).float()
         
         # Normalize RGB to [-1, 1] for GAN training
         rgb_gan = rgb_tensor * 2.0 - 1.0
         
         # Simulate low-resolution thermal input for Real-ESRGAN
         # Downsample HR thermal (ir_tensor) by scale_factor
-        # Using bilinear interpolation for downsampling
         h, w = ir_tensor.shape[1], ir_tensor.shape[2]
         lr_h, lr_w = h // self.scale_factor, w // self.scale_factor
         

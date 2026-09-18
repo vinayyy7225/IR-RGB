@@ -1,3 +1,11 @@
 rasterio
 pyyaml
 scikit-image
+torch
+torchvision
+numpy
+scipy
+tqdm
+streamlit
+pillow
+matplotlib
